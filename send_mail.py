@@ -18,8 +18,8 @@ def send(message=None):
         'Subject': str - Тема письма,
         'email_content': str - Текст письма,
         'To': list - Список с адресами получателей,
-        'File_name': str - Наименование файла, которое будет отображаться в письме,
-        'Temp_file': str - Наименование файла, которое будет добавлено к письму,
+        'File_name': list - Наименование файла, которое будет отображаться в письме,
+        'Temp_file': list - Наименование файла, которое будет добавлено к письму,
         }
     :return:
     """
@@ -33,7 +33,7 @@ def send(message=None):
         logger.info(f"Send message to emails {addr_to}")
 
         msg = MIMEMultipart()  # Создаем сообщение
-        msg['From'] = addr_from # Адресат
+        msg['From'] = addr_from  # Адресат
         msg['To'] = ','.join(addr_to)  # Получатель
         msg['Subject'] = message['Subject']  # Тема сообщения
 
@@ -43,11 +43,12 @@ def send(message=None):
         msg.attach(MIMEText(email_content, 'html'))  # Добавляем в сообщение html
 
         # Присоединяем файл к письму
-        part = MIMEBase('application', "octet-stream")
-        part.set_payload(open(message['Temp_file'], "rb").read())
-        encoders.encode_base64(part)
-        part.add_header('Content-Disposition', 'attachment', filename=('utf-8', 'fr', message['File_name']))
-        msg.attach(part)
+        for i in range(len(message['Temp_file'])):
+            part = MIMEBase('application', "octet-stream")
+            part.set_payload(open(message['Temp_file'][i], "rb").read())
+            encoders.encode_base64(part)
+            part.add_header('Content-Disposition', 'attachment', filename=('utf-8', 'fr', message['Temp_file'][i]))
+            msg.attach(part)
 
         server = smtplib.SMTP_SSL('smtp.yandex.ru', 465)  # Создаем объект SMTP
         server.login(addr_from, password)  # Получаем доступ
