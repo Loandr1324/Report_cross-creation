@@ -5,6 +5,7 @@ import smbclient
 from loguru import logger
 import send_mail
 from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
 
 """
 Заготовка для записи логов в файл
@@ -66,34 +67,51 @@ def split_df(df):
 
     # Разделяем на колонки по разделителю - "/"
     df_result = df_temp[0].str.split('/', expand=True)
+
+    # Меняем формат Даты
+    df_result[0] = pd.to_datetime(df_result[0], format="%d.%m.%Y %H:%M:%S")
+    df_result[0] = df_result[0].dt.floor('D')
+
     # Удаляем дубликаты по первой и второй колонке
-    df_result = df_result.drop_duplicates(subset=[0, 1])
-    # Переименовываем колонки и меняем формат даты
+    df_result = df_result.drop_duplicates(subset=[0, 1, 4])
+
+    # Переименовываем колонки
     df_result.columns = ['Дата', 'ИК сотрудника', 'Код источник', 'Код добавленный', 'Номер группы']
-    df_result['Дата'] = pd.to_datetime(df_result['Дата'], format="%d.%m.%Y %H:%M:%S")
     return df_result
 
 
-def month_report():
+def date_report():
     """
     Получаем дату отчета
-    :return: -> str - в виде 'ГГГГ-ММ'
+    :return: -> type datetime - дата отчёта
     """
-    return (datetime.today() - timedelta(3)).strftime('%Y-%m')
+    return datetime.today() - timedelta(3)
 
 
-def filter_df_by_date(df, date_filter: str):
+def filter_df_by_date(df, date_filter: datetime, month_report=False, year_report=False):
     """
     Оставляем в DataFrame данные больше значения date_filter
 
-    :param date_filter: str, дата фильтрации в виде YYYY-mm или YYYY
+    :param year_report: bool, Передайте True, если нужен фильтр за год указанный в date_filter
+    :param month_report: bool, Передайте True, если нужен фильтр за месяц указанный в date_filter
+    :param date_filter: datetime, дата фильтрации
     :param df: DataFrame с данными за весь период
 
-    :return: DataFrame с данными за месяц отчета
+    :return: DataFrame с данными за требуемый период
     """
-    date_report = date_filter
-    logger.info(f'Оставляем в отчете данные за период: {date_report}')
-    df = df.query(f"Дата >= '{date_report}'")
+    # Определяем дату начала и окончания для фильтра
+    date_filter_start, date_filter_end, period = None, None, None
+    if year_report:
+        date_filter_start = datetime(date_filter.year, 1, 1)
+        date_filter_end = datetime(date_filter.year, 1, 1) + relativedelta(years=1)
+    elif month_report:
+        date_filter_start = datetime(date_filter.year, date_filter.month, 1)
+        date_filter_end = datetime(date_filter.year, date_filter.month, 1) + relativedelta(months=1)
+    else:
+        exit()
+    # logger.info(f"Оставляем в отчете данные за период: {period}")
+    df = df.loc[df['Дата'] >= date_filter_start]
+    df = df.loc[df['Дата'] < date_filter_end]
     return df
 
 
@@ -142,50 +160,24 @@ def get_report_cross():
             df_cross = rebuild_df(df_cross)  # Очищаем DataFrame
             df_cross = split_df(df_cross)  # Разделяем по колонкам
 
-            logger.info("Добавляем данные в общий DatFrame")
+            logger.info("Оставляем данные за год отчета")
+            df_cross = filter_df_by_date(df_cross, date_report(), year_report=True)
+
+            logger.info("Добавляем данные в общий DatFrame по всем типам связи")
             df_cross_total = pd.concat([df_cross_total, df_cross])
-
-            logger.info("Оставляем данные только за предыдущий месяц")
-            df_cross = filter_df_by_date(df_cross, month_report())
-
-            logger.info("Считаем количество связей по менеджерам")
-            df_count = count_add_cross(df_cross)
 
             logger.info("Сохраняем данные в словарь")
             if item.find('Аналог (Автомат)') != -1:
                 dict_df['А'] = df_cross
-                dict_df['А_count'] = df_count
             elif item.find('Новый номер (Автомат)') != -1:
                 dict_df['Н'] = df_cross
-                dict_df['Н_count'] = df_count
             else:
                 dict_df['М'] = df_cross
-                dict_df['М_count'] = df_count
 
-    logger.info("Оставляем данные в общей таблице только за последний месяц:")
-    df_cross_month_total = filter_df_by_date(df_cross_total, month_report())
-
-    logger.info("Считаем количество связей по менеджерам")
-    df_count_month_total = count_add_cross(df_cross_month_total)
-    dict_df['T_M'] = df_cross_month_total
-    dict_df['T_M_count'] = df_count_month_total
-
-    logger.info("Оставляем данные в общей таблице только за последний год:")
-    df_cross_year_total = filter_df_by_date(df_cross_total, month_report()[:-3])
-    dict_df['T_Y'] = df_cross_year_total
+    logger.info("Добавляем общие данные в словарь")
+    dict_df['T'] = df_cross_total
 
     return dict_df
-
-
-def write_data(writer, sheet_name, df):
-    """
-    Записываем общие данные о связях на отдельные вкладки
-    :param df: DataFrame  с общими данными
-    :param writer: объект записи
-    :param sheet_name: наименование вкладки
-    """
-    df.to_excel(writer, sheet_name=sheet_name)
-    return
 
 
 def report_to_excel(df_dict):
@@ -194,77 +186,97 @@ def report_to_excel(df_dict):
     :param df_dict:
     :return: list -> Имя файла с итоговым отчётом
     """
-    date_report = month_report()
-    file_name = f'Связи кроссов за {date_report}.xlsx'
+    date_report_name = date_report()
+    file_name = f"Связи кроссов на {date_report_name.strftime('%Y-%m')}.xlsx"
 
     # Открываем файл для записи
     with pd.ExcelWriter(file_name, engine='xlsxwriter') as writer:
         workbook = writer.book  # Открываем книгу для записи
-        sheet_name = date_report
-        wks1 = workbook.add_worksheet(sheet_name)
+        logger.info('Добавляем в файл отчеты по месяцам')
+        months_reports(writer, workbook, df_dict)
 
-        # Формат заголовка таблицы
-        format_header = workbook.add_format({
-            'font_name': 'Arial',
-            'font_size': '14',
-            'align': 'left',
-            'bold': True
-        })
+        logger.info('Добавляем отчет колонку с Полугодием')
+        df_year = set_period(df=df_dict['T'])
 
-        # Формат заголовка столбцов
-        format_bold = workbook.add_format({
-            'font_name': 'Arial',
-            'font_size': '10',
-            'align': 'left',
-            'bold': True,
-            'bg_color': '#F4ECC5',
-            'border': True,
-            'border_color': '#CCC085'
-        })
+        logger.info('Записываем данные по Полугодиям')
+        total_result_to_xlsx(writer, workbook, data_pt=df_year)
 
-        skip_row_after_total = len(df_dict['T_M_count'])
-        row_total = 4
-        col_total = 1
-        start_col = 1
-        start_row = row_total + skip_row_after_total + 6
+        logger.info('Добавляем отчет за год, если месяц отчета Декабрь')
+        if date_report_name.month == 12:
+            year_result_to_xlsx(writer, workbook, data_pt=df_year)
+    return [file_name]
+
+
+def months_reports(writer, workbook, df_dict):
+    date = date_report()
+    cur_month = date.month
+    month = 1
+    while month <= cur_month:
+        sheet_name_month_report = str(date.year)[-2:] + '-' + str(month)
+        wks1 = workbook.add_worksheet(sheet_name_month_report)
+
+        # logger.info("Оставляем данные по общему количеству связей за записываемый месяц")
+        df_cross_month_total = filter_df_by_date(df_dict['T'], datetime(date.year, month, 1), month_report=True)
+        df_count_month_total = count_add_cross(df_cross_month_total)
+
+        # Определяем кол-во строк первого графика
+        skip_row_after_total = len(df_count_month_total)
+
+        # Начальные данные колонок и столбцов для записи
+        row_total, start_col, start_row, table_width = 4, 1, 1, 3
+        start_row_type = row_total + skip_row_after_total + 6
 
         for key, val in df_dict.items():
-            # Определяем наименование вкладки для сводной таблицы
-            logger.info(f'Записываем {key=}')
-            if key == 'T_M_count':
+            # logger.info("Оставляем данные за месяц отчета по типу связей за записываемый месяц")
+            df_cross = filter_df_by_date(val, datetime(date.year, month, 1), month_report=True)
+            df_cross_count = count_add_cross(df_cross)
+            header = ''
+            if key == 'А':
+                header = 'Аналоги 100%'
+                start_col = 1
+                start_row = start_row_type
+            elif key == 'Н':
+                header = 'Новый номер'
+                start_col = 1 + 2 * table_width
+                start_row = start_row_type
+            elif key == 'М':
+                header = 'МОС'
+                start_col = 1 + table_width
+                start_row = start_row_type
+            elif key == 'T':
+                header = 'Общее кол-во связей за месяц'
+                start_col = 1
+                start_row = row_total
+                df_cross_count = df_count_month_total
+            df_cross_count.to_excel(writer, sheet_name=sheet_name_month_report, startcol=start_col,
+                                    startrow=start_row, index=False, header=False)
+            # Формат заголовка таблицы
+            format_header = workbook.add_format({
+                'font_name': 'Arial',
+                'font_size': '14',
+                'align': 'left',
+                'bold': True
+            })
 
-                val.to_excel(writer, sheet_name=sheet_name, startcol=col_total,
-                             startrow=row_total, index=False, header=False)
-                # Записываем заголовок таблицы
-                wks1.write(row_total - 3, col_total, 'Общее кол-во связей за месяц', format_header)
-                # Записываем заголовок колонок
-                wks1.write_row(row_total - 1, col_total, val.columns, format_bold)
+            # Формат заголовка столбцов
+            format_bold = workbook.add_format({
+                'font_name': 'Arial',
+                'font_size': '10',
+                'align': 'left',
+                'bold': True,
+                'bg_color': '#F4ECC5',
+                'border': True,
+                'border_color': '#CCC085'
+            })
 
-            elif key in ['А_count', 'Н_count', 'М_count']:
-                if key == 'А_count':
-                    header = 'Аналоги 100%'
-                elif key == 'Н_count':
-                    header = 'Новый номер'
-                elif key == 'М_count':
-                    header = 'МОС'
-
-                val.to_excel(writer, sheet_name=sheet_name, startcol=start_col,
-                             startrow=start_row, index=False, header=False)
-
-                # Записываем заголовок таблицы
-                wks1.write(start_row - 3, start_col, header, format_header)
-                # Записываем заголовок колонок
-                wks1.write_row(start_row - 1, start_col, val.columns, format_bold)  # сразу пишем целую строку данных
-
-                # Формат колонок
-                wks1.set_column(start_col, start_col + 1, 20, None)
-
-                # Меняем номер колонки для следующей таблицы
-                start_col += 3
-
-        wks1.set_first_sheet()
-        wks1.activate()
-    return [file_name]
+            # Записываем заголовок таблицы
+            wks1.write(start_row - 3, start_col, header, format_header)
+            # Записываем заголовок колонок
+            wks1.write_row(start_row - 1, start_col, df_cross_count.columns, format_bold)
+            # Формат колонок
+            wks1.set_column(start_col, start_col + 1, 20, None)
+        month += 1
+    return
 
 
 def send_file_to_mail(files):
@@ -286,7 +298,7 @@ def send_file_to_mail(files):
 def set_period(df):
     """Добавляем колонку Период с номером полугодия и Месяц на основании данных из колонки дата"""
     # Получаем год отчёта
-    year = month_report()[:-3]
+    year = date_report().year
 
     # Заполняем колонку период полугодием
     df['Период'] = 'I Полугодие'
@@ -310,27 +322,11 @@ def set_period(df):
     return df
 
 
-def total_result_to_xlsx(df=None):
-    """
-    Запись результата в эксель
-    :param df: DataFame с данными по количеству связей
-    :return: None
-    """
-    exel_file = f"Связи кроссов за {month_report()[:-3]} год.xlsx"
-    sheet_name = f"Итого за {month_report()[:-3]} год"  # Наименование вкладки для сводной таблицы
-    with pd.ExcelWriter(exel_file, engine='xlsxwriter') as writer:  # Открываем файл для записи
-        workbook = writer.book
-        # Записываем данные на вкладку данные
-        df_write_xlsx(writer, sheet_name, workbook, df)
-    return [exel_file]
-
-
-def df_write_xlsx(writer, sheet_name: str, workbook, data_pt):
+def total_result_to_xlsx(writer, workbook, data_pt):
     """
     Переработка DataFrame и запись в эксель данных
     :param data_pt: DataFrame для записи
     :param workbook: Книга эксель для записи
-    :param sheet_name: Наименование вкладки
     :param writer:
     :return: передача записи дальше
     """
@@ -338,56 +334,124 @@ def df_write_xlsx(writer, sheet_name: str, workbook, data_pt):
     year_format, caption_format, sales_type_format, month_format, sum_format, quantity_format = format_custom(workbook)
     # Получаем количество записей по полугодиям.
     data_pt1 = data_pt.groupby(['Период']).count()['Номер группы']
+
     # Получаем количество записей по сотрудникам в каждом полугодии
     data_pt2 = data_pt.groupby(['Период', 'ИК сотрудника']).count()['Номер группы']
+    wks1 = None
 
-    start_row = 4  # Задаём первую строку для записи таблицы с данными
     for i in data_pt1.index.unique(level=0):  # Цикл по периодам
-        period = data_pt1.loc[[i]]  # Создаём DataFrame по каждому периоду для записи
+        start_row = 4  # Задаём первую строку для записи таблицы с данными
+        start_col = 0  # Задаём первую колонку
+        sheet_name = i
+        if i == 'I Полугодие':
+            months = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь']
+        else:
+            months = ['Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь']
         # Записываем данные по каждому периоду в эксель
-        period.to_excel(writer, sheet_name=sheet_name, startrow=start_row, startcol=1, header=False)
-
-        wks1 = writer.sheets[sheet_name]  # Открываем вкладку для форматирования
-        wks1.set_column('B:B', 12, None)  # Изменяем ширину первой колонки, где расположен Год, Тип продажи и месяц
-        wks1.set_column('C:C', 7, quantity_format)  # Изменяем ширину и формат колонки с количеством строк
-
-        # Поскольку формат индекса изменить нельзя, то перезаписываем наименование каждого года и меняем формат
-        wks1.write(f'B{start_row + 1}', i, year_format)
-        # Изменяем формат всей строки для каждого периода с данными о количестве
-        wks1.conditional_format(f'B{start_row + 1}:C{start_row + 1}',
-                                {'type': 'no_errors', 'format': year_format})
-        wks1.set_row(start_row, 20, None)  # Изменяем высоту каждой строки с периодом
-        start_row += len(data_pt1.loc[[i]])  # Изменяем значение стартовой строки для следующих записей
         employee = data_pt2.loc[[i]].sort_values(ascending=False)  # Сортируем кол-во записей по убыванию по сотрудникам
+
         for k in employee.index.unique(level=1):  # Цикл по сотрудникам
+            start_col = 3
             # Записываем данные по каждому ИК сотрудника по каждому периоду в эксель
             employee.loc[[(i, k)]].droplevel(level=0).to_excel(writer, sheet_name=sheet_name, startrow=start_row,
                                                                startcol=1, header=False)
-            # Добавляем группировку по периоду, данные по месяцам не скрываем
-            wks1.set_row(start_row, None, None, {'level': 1})
+            wks1 = writer.sheets[sheet_name]
             # Поскольку формат индекса изменить нельзя, то перезаписываем наименование каждого
             # ИК сотрудника и меняем формат
             wks1.write(f'B{start_row + 1}', k, sales_type_format)
             # Изменяем формат всей строки для каждого сотрудника с данными о количестве
             wks1.conditional_format(f'B{start_row + 1}:C{start_row + 1}',
                                     {'type': 'no_errors', 'format': sales_type_format})
-            start_row += len(data_pt2.loc[[(i, k)]])  # Изменяем значение стартовой строки для следующих записей
 
             # Выбираем данные по каждому полугодию и сотруднику и сортируем по дате
-            data_pt4 = data_pt.loc[(data_pt['Период'] == i) & (data_pt['ИК сотрудника'] == k)].sort_values('Дата')
+            data_pt4 = data_pt.loc[(data_pt['Период'] == i) & (data_pt['ИК сотрудника'] == k)]
+            employee_month = data_pt4.groupby(['Месяц']).count()['Номер группы']
 
-            # Записываем значения по каждому месяцу в эксель
-            for m in data_pt4['Месяц'].unique():
-                employee_month = data_pt4.loc[data_pt4['Месяц'] == m].groupby(['Месяц']).count()['Номер группы']
-                for ind, val in employee_month.items():
-                    # Записываем данные по месяцам в таблицу
-                    wks1.write(f'B{start_row + 1}', ind, month_format)
-                    wks1.write(f'C{start_row + 1}', val, quantity_format)
-                    wks1.set_row(start_row, None, None, {'level': 2, 'hidden': True})  # Добавляем строку в группировку
-                    start_row += 1  # Изменяем значение стартовой строки для следующих записей
+            for month in months:
+                try:
+                    val = employee_month[month]
+                except KeyError:
+                    val = None
+
+                wks1.write(start_row, start_col, val, quantity_format)
+                start_col += 1
+            start_row += 1  # Изменяем значение стартовой строки для следующих записей
 
         # Запись и формат заголовка таблицы
-        wks1.write('B2', 'Общее количество связей по полугодиям', caption_format)
+        wks1.write('B2', f'Общее количество связей за {i}', caption_format)
+        # Запись и формат заголовка колонок таблицы
+        wks1.write('B4', 'ИК Сотрудника', year_format)
+        wks1.write('C4', i, year_format)
+        for ind, m in enumerate(months):
+            wks1.write(3, ind + 3, m, year_format)
+            wks1.set_column(ind + 3, ind + 3, 10, None)
+        wks1.set_column('B:B', 16, None)  # Изменяем ширину первой колонки, где расположен Год, Тип продажи и месяц
+        wks1.set_column('C:C', 14, None)  # Изменяем ширину и формат колонки с количеством строк
+
+        wks1.autofilter(3, 1, start_row, start_col-1)  # Добавляем фильтр в отчет
+
+        # Добавление отображение итогов группировок сверху
+        wks1.outline_settings(True, False, False, False)
+    wks1.activate()
+    return
+
+
+def year_result_to_xlsx(writer, workbook, data_pt):
+    """
+    Переработка DataFrame и запись в эксель данных
+    :param data_pt: DataFrame для записи
+    :param workbook: Книга эксель для записи
+    :param writer: Писатель
+    :return: передача записи дальше
+    """
+    # Получаем словари форматов для эксель
+    year_format, caption_format, sales_type_format, month_format, sum_format, quantity_format = format_custom(workbook)
+
+    # Получаем количество записей по сотрудникам за год
+    data_pt2 = data_pt.groupby(['ИК сотрудника']).count()['Номер группы']
+    months = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+              'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь']
+    sheet_name = str(date_report().year)
+    # Записываем данные по году в эксель
+    start_row = 4
+    employee = data_pt2.sort_values(ascending=False)  # Сортируем кол-во записей по убыванию по сотрудникам
+    for k in employee.index.unique(level=0):  # Цикл по сотрудникам
+        start_col = 3
+        # Записываем данные по каждому ИК сотрудника по каждому периоду в эксель
+        employee.loc[[k]].to_excel(writer, sheet_name=sheet_name, startrow=start_row, startcol=1, header=False)
+        wks1 = writer.sheets[sheet_name]
+        # Поскольку формат индекса изменить нельзя, то перезаписываем наименование каждого
+        # ИК сотрудника и меняем формат
+        wks1.write(f'B{start_row + 1}', k, sales_type_format)
+        # Изменяем формат всей строки для каждого сотрудника с данными о количестве
+        wks1.conditional_format(f'B{start_row + 1}:C{start_row + 1}',
+                                {'type': 'no_errors', 'format': sales_type_format})
+
+        # Выбираем данные по каждому полугодию и сотруднику и сортируем по дате
+        data_pt4 = data_pt.loc[(data_pt['ИК сотрудника'] == k)]
+        employee_month = data_pt4.groupby(['Месяц']).count()['Номер группы']
+
+        for month in months:
+            try:
+                val = employee_month[month]
+            except KeyError:
+                val = None
+
+            wks1.write(start_row, start_col, val, quantity_format)
+            start_col += 1
+        start_row += 1  # Изменяем значение стартовой строки для следующих записей
+
+        # Запись и формат заголовка таблицы
+        wks1.write('B2', f'Общее количество связей за {sheet_name} год', caption_format)
+        # Запись и формат заголовка колонок таблицы
+        wks1.write('B4', 'ИК Сотрудника', year_format)
+        wks1.write('C4', sheet_name, year_format)
+        for ind, m in enumerate(months):
+            wks1.write(3, ind + 3, m, year_format)
+        wks1.set_column('B:B', 16, None)  # Изменяем ширину первой колонки, где расположен Год, Тип продажи и месяц
+        wks1.set_column('C:C', 8, None)  # Изменяем ширину и формат колонки с количеством строк
+        wks1.autofilter('B4:O4')  # Добавляем фильтр в отчет
+
         # Добавление отображение итогов группировок сверху
         wks1.outline_settings(True, False, False, False)
     return
@@ -444,7 +508,7 @@ def format_custom(workbook):
     return year_format, caption_format, sales_type_format, month_format, sum_format, quantity_format
 
 
-def run():
+def run_old():
     # Получаем данные в виде словаря
     df_dict = get_report_cross()
     # Записываем полученный данные в эксель
@@ -452,7 +516,19 @@ def run():
 
     logger.info('Подготавливаем отчет за год')
     df_year = set_period(df=df_dict['T_Y'])
-    file += total_result_to_xlsx(df=df_year)
+    # file += year_result_to_xlsx(,
+    logger.info(file)
+
+    logger.info('Отправляем файл на почту')
+    # send_file_to_mail(file)
+    logger.info('Программа завершила работу')
+
+
+def run():
+    # Получаем данные в виде словаря
+    df_dict = get_report_cross()
+    # Записываем полученный данные в эксель
+    file = report_to_excel(df_dict)
     logger.info(file)
 
     logger.info('Отправляем файл на почту')
