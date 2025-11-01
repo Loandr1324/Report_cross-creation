@@ -96,6 +96,7 @@ def find_problematic_rows(df_result):
         except ValueError:
             problematic_indices.append(idx)
             print(f"Ошибка в строке {idx}: '{value}'")
+            print(f"Строка: {df_result.iloc[idx]}")
 
     return problematic_indices
 
