@@ -68,6 +68,10 @@ def split_df(df):
     # Разделяем на колонки по разделителю - "/"
     df_result = df_temp[0].str.split('/', expand=True)
 
+    # Используем для тестов в случае возникновения ошибок
+    problematic_rows = find_problematic_rows(df_result)
+    print(f"Проблемные строки: {problematic_rows}")
+
     # Меняем формат Даты
     df_result[0] = pd.to_datetime(df_result[0], format="%d.%m.%Y %H:%M:%S")
     df_result[0] = df_result[0].dt.floor('D')
@@ -78,6 +82,22 @@ def split_df(df):
     # Переименовываем колонки
     df_result.columns = ['Дата', 'ИК сотрудника', 'Код источник', 'Код добавленный', 'Номер группы']
     return df_result
+
+
+def find_problematic_rows(df_result):
+    """
+    Проверка на ошибки при преобразовании первой колонки в дату
+    """
+    problematic_indices = []
+
+    for idx, value in enumerate(df_result[0]):
+        try:
+            pd.to_datetime(value, format="%d.%m.%Y %H:%M:%S")
+        except ValueError:
+            problematic_indices.append(idx)
+            print(f"Ошибка в строке {idx}: '{value}'")
+
+    return problematic_indices
 
 
 def date_report():
